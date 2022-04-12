@@ -6,6 +6,7 @@ package state
 
 import (
 	"context"
+	"log"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 )
@@ -42,7 +43,11 @@ func (state coreWrapper) UpdateWithConflicts(ctx context.Context, resourcePointe
 
 		curVersion := current.Metadata().Version()
 
+		log.Printf("curVersion: %s", curVersion)
+
 		newResource := current.DeepCopy()
+
+		log.Printf("newResource Version: %s", newResource.Metadata().Version())
 
 		if err = f(newResource); err != nil {
 			return nil, err
@@ -54,10 +59,14 @@ func (state coreWrapper) UpdateWithConflicts(ctx context.Context, resourcePointe
 
 		newResource.Metadata().BumpVersion()
 
+		log.Printf("bumped newResource Version: %s", newResource.Metadata().Version())
+
 		err = state.Update(ctx, curVersion, newResource, opts...)
 		if err == nil {
 			return current, nil
 		}
+
+		log.Printf("update error: %s", err)
 
 		if IsConflictError(err) && !IsOwnerConflictError(err) && !IsPhaseConflictError(err) {
 			continue
