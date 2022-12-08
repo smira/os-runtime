@@ -325,9 +325,14 @@ func (collection *ResourceCollection) Watch(ctx context.Context, id resource.ID,
 			}
 
 			if collection.writePos-pos >= int64(collection.capacity) {
-				// buffer overrun, there's no way to signal error in this case,
-				// so for now just return
 				collection.mu.Unlock()
+
+				channel.SendWithContext(ctx, ch,
+					state.Event{
+						Type:  state.Errored,
+						Error: fmt.Errorf("buffer overrun: namespace %q type %q", collection.ns, collection.typ),
+					},
+				)
 
 				return
 			}
@@ -465,49 +470,60 @@ func (collection *ResourceCollection) WatchAll(ctx context.Context, ch chan<- st
 				channel.SendWithContext(ctx, ch,
 					state.Event{
 						Type:  state.Errored,
-						Error: fmt.Errorf("buffer overrun"),
+						Error: fmt.Errorf("buffer overrun: namespace %q type %q", collection.ns, collection.typ),
 					},
 				)
 
 				return
 			}
 
-			event := collection.stream[pos%int64(collection.capacity)]
-			pos++
+			first := pos % int64(collection.capacity)
+			last := collection.writePos % int64(collection.capacity)
+
+			var events []state.Event
+			if first < last {
+				events = append([]state.Event(nil), collection.stream[first:last]...)
+			} else {
+				events = append(append([]state.Event(nil), collection.stream[first:]...), collection.stream[:last]...)
+			}
+
+			pos = collection.writePos
 
 			collection.mu.Unlock()
 
-			switch event.Type {
-			case state.Created, state.Destroyed:
-				if !matches(event.Resource) {
-					// skip the event
-					continue
-				}
-			case state.Updated:
-				oldMatches := matches(event.Old)
-				newMatches := matches(event.Resource)
+			for _, event := range events {
+				switch event.Type {
+				case state.Created, state.Destroyed:
+					if !matches(event.Resource) {
+						// skip the event
+						continue
+					}
+				case state.Updated:
+					oldMatches := matches(event.Old)
+					newMatches := matches(event.Resource)
 
-				switch {
-				// transform the event if matching fact changes with the update
-				case oldMatches && !newMatches:
-					event.Type = state.Destroyed
-					event.Old = nil
-				case !oldMatches && newMatches:
-					event.Type = state.Created
-					event.Old = nil
-				case newMatches && oldMatches:
-					// passthrough the event
-				default:
-					// skip the event
-					continue
+					switch {
+					// transform the event if matching fact changes with the update
+					case oldMatches && !newMatches:
+						event.Type = state.Destroyed
+						event.Old = nil
+					case !oldMatches && newMatches:
+						event.Type = state.Created
+						event.Old = nil
+					case newMatches && oldMatches:
+						// passthrough the event
+					default:
+						// skip the event
+						continue
+					}
+				case state.Errored, state.Bootstrapped:
+					panic("should never be reached")
 				}
-			case state.Errored, state.Bootstrapped:
-				panic("should never be reached")
-			}
 
-			// deliver event
-			if !channel.SendWithContext(ctx, ch, event) {
-				return
+				// deliver event
+				if !channel.SendWithContext(ctx, ch, event) {
+					return
+				}
 			}
 		}
 	}()
