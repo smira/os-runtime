@@ -23,7 +23,9 @@ func TestNamespacedConformance(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	suite.Run(t, &conformance.StateSuite{
-		State:      state.WrapCore(namespaced.NewState(inmem.Build)),
+		State: state.WrapCore(namespaced.NewState(func(resource.Namespace) state.CoreState {
+			return inmem.NewState()
+		})),
 		Namespaces: []resource.Namespace{"default", "controller", "system", "runtime"},
 	})
 }

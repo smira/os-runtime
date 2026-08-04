@@ -4,9 +4,20 @@
 
 package inmem
 
+import (
+	"context"
+	"time"
+)
+
 // StateOptions configure inmem.State.
 type StateOptions struct {
-	BackingStore           BackingStore
+	BackingStore BackingStore
+
+	// HistoryCleanupCtx bounds the lifetime of the history cleanup goroutine, it is nil if the
+	// cleanup is disabled.
+	HistoryCleanupCtx context.Context //nolint:containedctx
+
+	HistoryCleanupInterval time.Duration
 	HistoryMaxCapacity     int
 	HistoryInitialCapacity int
 	HistoryGap             int
@@ -15,7 +26,7 @@ type StateOptions struct {
 // StateOption applies settings to StateOptions.
 type StateOption func(options *StateOptions)
 
-// WithHistoryCapacity sets history depth for a given namspace and resource.
+// WithHistoryCapacity sets history depth of the state event buffer.
 //
 // Deprecated: use WithHistoryMaxCapacity and WithHistoryInitialCapacity instead.
 func WithHistoryCapacity(capacity int) StateOption {
@@ -25,7 +36,9 @@ func WithHistoryCapacity(capacity int) StateOption {
 	}
 }
 
-// WithHistoryMaxCapacity sets history depth for a given namspace and resource.
+// WithHistoryMaxCapacity sets history depth of the state event buffer.
+//
+// The event buffer is shared by all namespaces and resource types of the state.
 //
 // Deep history requires more memory, but allows Watch request to return more historical entries, and also
 // acts like a buffer if watch consumer can't keep up with events.
@@ -41,7 +54,9 @@ func WithHistoryMaxCapacity(maxCapacity int) StateOption {
 	}
 }
 
-// WithHistoryInitialCapacity sets initial history depth for a given namspace and resource.
+// WithHistoryInitialCapacity sets initial history depth of the state event buffer.
+//
+// The event buffer is shared by all namespaces and resource types of the state.
 //
 // Deep history requires more memory, but allows Watch request to return more historical entries, and also
 // acts like a buffer if watch consumer can't keep up with events.
@@ -69,6 +84,31 @@ func WithHistoryGap(gap int) StateOption {
 	}
 }
 
+// WithHistoryCleanup enables the background cleanup of the state event history buffer.
+//
+// The event history buffer grows up to the max capacity as the events are published, and it never
+// shrinks back. An event held by the buffer keeps the resources it references alive, so a state
+// which went through a burst of changes keeps the resources of that burst in memory long after the
+// consumers are done with them.
+//
+// The cleanup releases the events which every watcher of their resource type has already consumed
+// and which are older than the interval, so that the resources become garbage. The buffer capacity
+// itself is not affected, only the memory the events reference.
+//
+// The cleanup shortens the effective history: a watch which starts from a bookmark pointing to a
+// released event fails with an error matching state.IsInvalidWatchBookmarkError, and TailEvents
+// returns only the events which are still retained. Callers which resume from bookmarks should
+// already handle that error by restarting the watch from scratch, as the same happens when the
+// events are pushed out of the buffer.
+//
+// The cleanup runs until the context is canceled. Default is no cleanup.
+func WithHistoryCleanup(ctx context.Context, interval time.Duration) StateOption {
+	return func(options *StateOptions) {
+		options.HistoryCleanupCtx = ctx
+		options.HistoryCleanupInterval = interval
+	}
+}
+
 // WithBackingStore sets a BackingStore for a in-memory resource collection.
 //
 // Default value is nil (no backing store).
@@ -79,10 +119,13 @@ func WithBackingStore(store BackingStore) StateOption {
 }
 
 // DefaultStateOptions returns default value of StateOptions.
+//
+// As the history buffer is shared by all namespaces and resource types of the state, the default
+// capacity is much bigger than the depth which used to be reserved per resource type.
 func DefaultStateOptions() StateOptions {
 	return StateOptions{
-		HistoryMaxCapacity:     100,
-		HistoryInitialCapacity: 100,
-		HistoryGap:             5,
+		HistoryMaxCapacity:     40960,
+		HistoryInitialCapacity: 256,
+		HistoryGap:             50,
 	}
 }
