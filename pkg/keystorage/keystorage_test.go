@@ -21,8 +21,13 @@ var (
 	//go:embed testdata/private.key
 	privateKey string
 
-	//go:embed testdata/private.key
+	//go:embed testdata/public.key
 	publicKey string
+
+	// keyStorageV2 is a key storage marshaled by a version of this package built on top of gopenpgp/v2,
+	// it is used to verify that the key slots stay readable after the migration to gopenpgp/v3.
+	//go:embed testdata/keystorage-v2.bin
+	keyStorageV2 []byte
 )
 
 const (
@@ -129,6 +134,19 @@ func TestMarshalUnmarshal(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, ksKey, key)
+}
+
+func TestUnmarshalGopenPGPV2(t *testing.T) {
+	t.Parallel()
+
+	var ks keystorage.KeyStorage
+
+	require.NoError(t, ks.UnmarshalBinary(keyStorageV2))
+
+	key, err := ks.GetMasterKey(slotID, privateKey)
+	require.NoError(t, err)
+
+	require.Equal(t, []byte(masterKey), key)
 }
 
 func TestKeyStorage_DeleteMasterKeySlot(t *testing.T) {
@@ -270,7 +288,7 @@ func TestKeyStorage_Set(t *testing.T) {
 				slotPublicKey: publicKey[:32],
 				newSlotID:     "new-slot-id",
 			},
-			testErr: check.ErrorTagIs[keystorage.KeyDecryptionFailureTag](),
+			testErr: check.ErrorTagIs[keystorage.KeyEncryptionFailureTag](),
 		},
 		"proper key": {
 			args: args{
@@ -290,7 +308,7 @@ func TestKeyStorage_Set(t *testing.T) {
 
 			require.NoError(t, ks.Initialize([]byte(masterKey), slotID, publicKey))
 
-			tt.testErr(t, ks.AddKeySlot(tt.args.newSlotID, tt.args.slotPublicKey, tt.args.slotID, tt.args.slotPublicKey))
+			tt.testErr(t, ks.AddKeySlot(tt.args.newSlotID, tt.args.slotPublicKey, tt.args.slotID, privateKey))
 		})
 	}
 }

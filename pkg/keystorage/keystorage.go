@@ -15,12 +15,19 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/ProtonMail/gopenpgp/v2/helper"
+	"github.com/ProtonMail/gopenpgp/v3/crypto"
 	"github.com/siderolabs/gen/maps"
 	"github.com/siderolabs/gen/xerrors"
 
 	"github.com/cosi-project/runtime/api/key_storage"
 )
+
+// pgp returns the OpenPGP handle used to encrypt and decrypt the key slots,
+// initializing it on the first use.
+//
+// The default profile is used, as it produces messages compatible with the ones
+// previously written by gopenpgp/v2.
+var pgp = sync.OnceValue(crypto.PGP)
 
 // KeyStorage is a key storage that can be used to store and retrieve the master key.
 //
@@ -61,7 +68,7 @@ func (ks *KeyStorage) Initialize(masterKey []byte, slotID, slotPublicKey string)
 		return xerrors.NewTaggedf[AlreadyInitializedTag]("key storage is already initialized")
 	}
 
-	encryptedSlot, err := helper.EncryptBinaryMessageArmored(slotPublicKey, masterKey)
+	encryptedSlot, err := encryptSlot(slotPublicKey, masterKey)
 	if err != nil {
 		return xerrors.NewTaggedf[KeyEncryptionFailureTag]("failed to encrypt slot '%s': %w", slotID, err)
 	}
@@ -70,7 +77,7 @@ func (ks *KeyStorage) Initialize(masterKey []byte, slotID, slotPublicKey string)
 	ks.underlying.KeySlots = map[string]*key_storage.KeySlot{
 		slotID: {
 			Algorithm:    key_storage.Algorithm_PGP_AES_GCM_256,
-			EncryptedKey: []byte(encryptedSlot),
+			EncryptedKey: encryptedSlot,
 		},
 	}
 	ks.underlying.KeysHmacHash = ks.hashSlots(masterKey)
@@ -101,14 +108,14 @@ func (ks *KeyStorage) AddKeySlot(newSlotID, newSlotPublicKey, oldSlotID, oldSlot
 		return err
 	}
 
-	encryptedSlot, err := helper.EncryptBinaryMessageArmored(newSlotPublicKey, masterKey)
+	encryptedSlot, err := encryptSlot(newSlotPublicKey, masterKey)
 	if err != nil {
 		return xerrors.NewTaggedf[KeyEncryptionFailureTag]("failed to encrypt slot '%s': %w", newSlotID, err)
 	}
 
 	ks.underlying.GetKeySlots()[newSlotID] = &key_storage.KeySlot{
 		Algorithm:    key_storage.Algorithm_PGP_AES_GCM_256,
-		EncryptedKey: []byte(encryptedSlot),
+		EncryptedKey: encryptedSlot,
 	}
 
 	ks.underlying.KeysHmacHash = ks.hashSlots(masterKey)
@@ -170,7 +177,7 @@ func (ks *KeyStorage) getKey(slotID string, slotPrivateKey string) ([]byte, erro
 		return nil, xerrors.NewTaggedf[AlgorithmMismatchTag]("slot '%s' algorithm mismatch", slotID)
 	}
 
-	masterKey, err := helper.DecryptBinaryMessageArmored(slotPrivateKey, nil, string(slot.EncryptedKey))
+	masterKey, err := decryptSlot(slotPrivateKey, slot.EncryptedKey)
 	if err != nil {
 		return nil, xerrors.NewTaggedf[KeyDecryptionFailureTag]("failed to decrypt slot '%s': %w", slotID, err)
 	}
@@ -231,6 +238,63 @@ func (ks *KeyStorage) hashSlots(masterKey []byte) []byte {
 	}
 
 	return hash.Sum(nil)
+}
+
+// encryptSlot encrypts the master key with the given armored key, and returns the armored ciphertext.
+//
+// The key might be either a public or a private key, in the latter case the public part is used.
+func encryptSlot(slotPublicKey string, masterKey []byte) ([]byte, error) {
+	key, err := crypto.NewKeyFromArmored(slotPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load armored key: %w", err)
+	}
+
+	defer key.ClearPrivateParams()
+
+	if key.IsPrivate() {
+		if key, err = key.ToPublic(); err != nil {
+			return nil, fmt.Errorf("unable to extract public key from private key: %w", err)
+		}
+	}
+
+	encryption, err := pgp().Encryption().Recipient(key).New()
+	if err != nil {
+		return nil, fmt.Errorf("unable to create encryption handle: %w", err)
+	}
+
+	message, err := encryption.Encrypt(masterKey)
+	if err != nil {
+		return nil, fmt.Errorf("unable to encrypt message: %w", err)
+	}
+
+	armored, err := message.ArmorBytes()
+	if err != nil {
+		return nil, fmt.Errorf("unable to armor the ciphertext: %w", err)
+	}
+
+	return armored, nil
+}
+
+// decryptSlot decrypts the master key from the armored ciphertext with the given armored private key.
+func decryptSlot(slotPrivateKey string, ciphertext []byte) ([]byte, error) {
+	key, err := crypto.NewPrivateKeyFromArmored(slotPrivateKey, nil)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse the private key: %w", err)
+	}
+
+	defer key.ClearPrivateParams()
+
+	decryption, err := pgp().Decryption().DecryptionKey(key).New()
+	if err != nil {
+		return nil, fmt.Errorf("unable to create decryption handle: %w", err)
+	}
+
+	result, err := decryption.Decrypt(ciphertext, crypto.Armor)
+	if err != nil {
+		return nil, fmt.Errorf("unable to decrypt message: %w", err)
+	}
+
+	return result.Bytes(), nil
 }
 
 func isZero(underlying *key_storage.Storage) bool {
