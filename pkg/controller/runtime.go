@@ -111,7 +111,7 @@ type Output struct {
 
 // Reader provides read-only access to the state.
 //
-// Interface [state.State] also satisfies this interface.
+// Interface [state.StateReader] also satisfies this interface.
 type Reader = owned.Reader
 
 // UncachedReader provides read-only access to the state without cache.

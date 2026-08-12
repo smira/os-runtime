@@ -85,7 +85,7 @@ func ReaderList[T resource.Resource](ctx context.Context, rdr controller.Reader,
 	return NewList[T](got), nil
 }
 
-// ReaderListAll is a type safe wrapper around Reader.List that uses default namaespace and type from ResourceDefinitionProvider.
+// ReaderListAll is a type safe wrapper around Reader.List that uses default namespace and type from ResourceDefinitionProvider.
 func ReaderListAll[T generic.ResourceWithRD](ctx context.Context, rdr controller.Reader, opts ...state.ListOption) (List[T], error) {
 	var r T
 

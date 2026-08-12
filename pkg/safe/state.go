@@ -27,14 +27,14 @@ func typeMismatchFirstElErr(expected, got any) error {
 }
 
 // StateGet is a type safe wrapper around state.Get.
-func StateGet[T resource.Resource](ctx context.Context, st state.CoreState, ptr resource.Pointer, options ...state.GetOption) (T, error) { //nolint:ireturn
+func StateGet[T resource.Resource](ctx context.Context, st state.CoreStateReader, ptr resource.Pointer, options ...state.GetOption) (T, error) { //nolint:ireturn
 	got, err := st.Get(ctx, ptr, options...)
 
 	return typeAssertOrZero[T](got, err)
 }
 
 // StateGetByID is a type safe wrapper around state.Get.
-func StateGetByID[T generic.ResourceWithRD](ctx context.Context, st state.CoreState, id resource.ID, options ...state.GetOption) (T, error) { //nolint:ireturn
+func StateGetByID[T generic.ResourceWithRD](ctx context.Context, st state.CoreStateReader, id resource.ID, options ...state.GetOption) (T, error) { //nolint:ireturn
 	var r T
 
 	md := resource.NewMetadata(
@@ -50,12 +50,12 @@ func StateGetByID[T generic.ResourceWithRD](ctx context.Context, st state.CoreSt
 }
 
 // StateGetResource is a type safe wrapper around state.Get which accepts typed resource.Resource and gets the metadata from it.
-func StateGetResource[T resource.Resource](ctx context.Context, st state.CoreState, r T, options ...state.GetOption) (T, error) { //nolint:ireturn
+func StateGetResource[T resource.Resource](ctx context.Context, st state.CoreStateReader, r T, options ...state.GetOption) (T, error) { //nolint:ireturn
 	return StateGet[T](ctx, st, r.Metadata(), options...)
 }
 
 // StateUpdateWithConflicts is a type safe wrapper around state.UpdateWithConflicts.
-func StateUpdateWithConflicts[T resource.Resource](ctx context.Context, st state.State, ptr resource.Pointer, updateFn func(T) error, options ...state.UpdateOption) (T, error) { //nolint:ireturn
+func StateUpdateWithConflicts[T resource.Resource](ctx context.Context, st state.StateWriter, ptr resource.Pointer, updateFn func(T) error, options ...state.UpdateOption) (T, error) { //nolint:ireturn
 	got, err := st.UpdateWithConflicts(ctx, ptr, func(r resource.Resource) error {
 		arg, ok := r.(T)
 		if !ok {
@@ -69,7 +69,7 @@ func StateUpdateWithConflicts[T resource.Resource](ctx context.Context, st state
 }
 
 // StateList is a type safe wrapper around state.List.
-func StateList[T resource.Resource](ctx context.Context, st state.CoreState, ptr resource.Pointer, options ...state.ListOption) (List[T], error) {
+func StateList[T resource.Resource](ctx context.Context, st state.CoreStateReader, ptr resource.Pointer, options ...state.ListOption) (List[T], error) {
 	got, err := st.List(ctx, ptr, options...)
 	if err != nil {
 		var zero List[T]
@@ -93,8 +93,8 @@ func StateList[T resource.Resource](ctx context.Context, st state.CoreState, ptr
 	return NewList[T](got), nil
 }
 
-// StateListAll is a type safe wrapper around state.List that uses default namaespace and type from ResourceDefinitionProvider.
-func StateListAll[T generic.ResourceWithRD](ctx context.Context, st state.CoreState, opts ...state.ListOption) (List[T], error) {
+// StateListAll is a type safe wrapper around state.List that uses default namespace and type from ResourceDefinitionProvider.
+func StateListAll[T generic.ResourceWithRD](ctx context.Context, st state.CoreStateReader, opts ...state.ListOption) (List[T], error) {
 	var r T
 
 	md := resource.NewMetadata(
@@ -166,7 +166,7 @@ func watch[T resource.Resource](ctx context.Context, eventCh chan<- WrappedState
 }
 
 // StateWatch is a type safe wrapper around State.Watch.
-func StateWatch[T resource.Resource](ctx context.Context, st state.CoreState, ptr resource.Pointer, eventCh chan<- WrappedStateEvent[T], opts ...state.WatchOption) error {
+func StateWatch[T resource.Resource](ctx context.Context, st state.CoreStateWatcher, ptr resource.Pointer, eventCh chan<- WrappedStateEvent[T], opts ...state.WatchOption) error {
 	untypedEventCh := make(chan state.Event)
 
 	err := st.Watch(ctx, ptr, untypedEventCh, opts...)
@@ -180,14 +180,14 @@ func StateWatch[T resource.Resource](ctx context.Context, st state.CoreState, pt
 }
 
 // StateWatchFor is a type safe wrapper around State.WatchFor.
-func StateWatchFor[T resource.Resource](ctx context.Context, st state.State, ptr resource.Pointer, opts ...state.WatchForConditionFunc) (T, error) { //nolint:ireturn
+func StateWatchFor[T resource.Resource](ctx context.Context, st state.StateWatcher, ptr resource.Pointer, opts ...state.WatchForConditionFunc) (T, error) { //nolint:ireturn
 	got, err := st.WatchFor(ctx, ptr, opts...)
 
 	return typeAssertOrZero[T](got, err)
 }
 
 // StateWatchKind is a type safe wrapper around State.WatchKind.
-func StateWatchKind[T resource.Resource](ctx context.Context, st state.CoreState, kind resource.Kind, eventCh chan<- WrappedStateEvent[T], opts ...state.WatchKindOption) error {
+func StateWatchKind[T resource.Resource](ctx context.Context, st state.CoreStateWatcher, kind resource.Kind, eventCh chan<- WrappedStateEvent[T], opts ...state.WatchKindOption) error {
 	untypedEventCh := make(chan state.Event)
 
 	err := st.WatchKind(ctx, kind, untypedEventCh, opts...)
@@ -201,7 +201,7 @@ func StateWatchKind[T resource.Resource](ctx context.Context, st state.CoreState
 }
 
 // StateModify is a type safe wrapper around state.Modify.
-func StateModify[T resource.Resource](ctx context.Context, st state.State, r T, fn func(T) error, options ...state.UpdateOption) error {
+func StateModify[T resource.Resource](ctx context.Context, st state.StateWriter, r T, fn func(T) error, options ...state.UpdateOption) error {
 	return st.Modify(ctx, r, func(r resource.Resource) error {
 		arg, ok := r.(T)
 		if !ok {
@@ -213,7 +213,7 @@ func StateModify[T resource.Resource](ctx context.Context, st state.State, r T, 
 }
 
 // StateModifyWithResult is a type safe wrapper around state.ModifyWithResult.
-func StateModifyWithResult[T resource.Resource](ctx context.Context, st state.State, r T, fn func(T) error, options ...state.UpdateOption) (T, error) {
+func StateModifyWithResult[T resource.Resource](ctx context.Context, st state.StateWriter, r T, fn func(T) error, options ...state.UpdateOption) (T, error) {
 	got, err := st.ModifyWithResult(ctx, r, func(r resource.Resource) error {
 		arg, ok := r.(T)
 		if !ok {
