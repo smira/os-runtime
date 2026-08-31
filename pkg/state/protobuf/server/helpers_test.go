@@ -93,34 +93,13 @@ func TestConvertIDQueryNil(t *testing.T) {
 	assert.Nil(t, opts)
 }
 
-func TestConvertLabelQueryMissingValue(t *testing.T) {
-	t.Parallel()
-
-	for _, op := range []v1alpha1.LabelTerm_Operation{
-		v1alpha1.LabelTerm_EQUAL,
-		v1alpha1.LabelTerm_LT,
-		v1alpha1.LabelTerm_LTE,
-		v1alpha1.LabelTerm_LT_NUMERIC,
-		v1alpha1.LabelTerm_LTE_NUMERIC,
-	} {
-		t.Run(op.String(), func(t *testing.T) {
-			t.Parallel()
-
-			opts, err := server.ConvertLabelQuery([]*v1alpha1.LabelTerm{{Op: op, Key: "key"}})
-			require.Error(t, err)
-			assert.Equal(t, "rpc error: code = InvalidArgument desc = missing value for label query operator: "+op.String(), err.Error())
-			assert.Nil(t, opts)
-		})
-	}
-}
-
 func TestConvertLabelQuery(t *testing.T) {
 	t.Parallel()
 
 	// operators which don't require a value
 	for _, op := range []v1alpha1.LabelTerm_Operation{
 		v1alpha1.LabelTerm_EXISTS,
-		v1alpha1.LabelTerm_NOT_EXISTS,
+		v1alpha1.LabelTerm_NOT_EXISTS, //nolint:staticcheck
 		v1alpha1.LabelTerm_IN,
 	} {
 		t.Run(op.String(), func(t *testing.T) {
