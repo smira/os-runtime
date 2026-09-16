@@ -9,3 +9,9 @@ package inmem
 func (st *State) CleanupHistory() int {
 	return st.buffer.Cleanup()
 }
+
+// HistoryFeeds returns the number of the feeds registered with the state event history buffer, so
+// that the tests can assert that a collection registers exactly one feed.
+func (st *State) HistoryFeeds() int {
+	return st.buffer.NumFeeds()
+}

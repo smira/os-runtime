@@ -79,6 +79,10 @@ func Example() {
 		inmem.WithBackingStore(backingStore),
 	)
 
+	// a single ephemeral state instance is shared by all the other namespaces, so that they share
+	// its event history buffer instead of reserving one per namespace
+	ephemeralState := inmem.NewState()
+
 	// create resource state with following namespaces
 	// * backed by BoltDB: persistent, system
 	// * in-memory: any other namespace, e.g. runtime
@@ -87,7 +91,7 @@ func Example() {
 		case "persistent", "system":
 			return persistentState
 		default:
-			return inmem.NewState()
+			return ephemeralState
 		}
 	}))
 

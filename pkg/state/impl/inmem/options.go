@@ -4,20 +4,10 @@
 
 package inmem
 
-import (
-	"context"
-	"time"
-)
-
 // StateOptions configure inmem.State.
 type StateOptions struct {
 	BackingStore BackingStore
 
-	// HistoryCleanupCtx bounds the lifetime of the history cleanup goroutine, it is nil if the
-	// cleanup is disabled.
-	HistoryCleanupCtx context.Context //nolint:containedctx
-
-	HistoryCleanupInterval time.Duration
 	HistoryMaxCapacity     int
 	HistoryInitialCapacity int
 	HistoryGap             int
@@ -75,37 +65,20 @@ func WithHistoryInitialCapacity(initialCapacity int) StateOption {
 
 // WithHistoryGap sets a safety gap between watch events consumers and events producers.
 //
-// Bigger gap reduces effective history depth (HistoryCapacity - HistoryGap).
-// Smaller gap might result in buffer overruns if consumer can't keep up with the events.
-// It's recommended to have gap 5% of the capacity.
+// The gap is the number of the slots ahead of the oldest event a new watch is not allowed to start
+// from, so that a watch which starts at the very edge of the history doesn't overrun immediately.
+// A bigger gap reduces the effective history depth (HistoryMaxCapacity - HistoryGap), a smaller one
+// might result in buffer overruns if a consumer can't keep up with the events.
+//
+// The gap only applies once the buffer has grown to its max capacity: while it is still growing no
+// event can be overwritten, so there is nothing to keep the watches away from.
+//
+// As the buffer is shared by all namespaces and resource types of the state, the gap is a small
+// absolute number of the slots rather than a share of the capacity: it guards against a consumer
+// falling behind within a single burst, and it doesn't need to scale with the total history depth.
 func WithHistoryGap(gap int) StateOption {
 	return func(options *StateOptions) {
 		options.HistoryGap = gap
-	}
-}
-
-// WithHistoryCleanup enables the background cleanup of the state event history buffer.
-//
-// The event history buffer grows up to the max capacity as the events are published, and it never
-// shrinks back. An event held by the buffer keeps the resources it references alive, so a state
-// which went through a burst of changes keeps the resources of that burst in memory long after the
-// consumers are done with them.
-//
-// The cleanup releases the events which every watcher of their resource type has already consumed
-// and which are older than the interval, so that the resources become garbage. The buffer capacity
-// itself is not affected, only the memory the events reference.
-//
-// The cleanup shortens the effective history: a watch which starts from a bookmark pointing to a
-// released event fails with an error matching state.IsInvalidWatchBookmarkError, and TailEvents
-// returns only the events which are still retained. Callers which resume from bookmarks should
-// already handle that error by restarting the watch from scratch, as the same happens when the
-// events are pushed out of the buffer.
-//
-// The cleanup runs until the context is canceled. Default is no cleanup.
-func WithHistoryCleanup(ctx context.Context, interval time.Duration) StateOption {
-	return func(options *StateOptions) {
-		options.HistoryCleanupCtx = ctx
-		options.HistoryCleanupInterval = interval
 	}
 }
 

@@ -433,3 +433,53 @@ func TestDegenerateOptions(t *testing.T) {
 		})
 	}
 }
+
+// TestGrowthKeepsEventsReachable verifies that the safety gap doesn't make the events stale while
+// the buffer is still growing: no slot is reused before the buffer reaches its max capacity, so
+// every event published up to that point should stay replayable.
+func TestGrowthKeepsEventsReachable(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name                         string
+		initialCapacity, maxCapacity int
+		gap                          int
+		publish                      int
+	}{
+		{name: "gap below initial capacity", initialCapacity: 16, maxCapacity: 40960, gap: 8, publish: 20},
+		{name: "gap above initial capacity", initialCapacity: 8, maxCapacity: 40960, gap: 50, publish: 6},
+		// the default options of inmem.State
+		{name: "default options", initialCapacity: 256, maxCapacity: 40960, gap: 50, publish: 1000},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			buf := eventbuffer.New(test.initialCapacity, test.maxCapacity, test.gap)
+
+			f := buf.NewFeed("ns", "type")
+
+			for i := range test.publish {
+				f.Publish(testEvent(strconv.Itoa(i)))
+			}
+
+			tail, err := f.Subscribe(eventbuffer.SubscribeOptions{TailEvents: test.publish})
+			require.NoError(t, err)
+
+			t.Cleanup(tail.Close)
+
+			events, err := tail.Next(t.Context())
+			require.NoError(t, err)
+			require.Len(t, events, test.publish, "no event was overwritten, so all of them should be replayable")
+
+			// the bookmark of the very first event should be accepted as well
+			resumed, err := f.Subscribe(eventbuffer.SubscribeOptions{Bookmark: events[0].Bookmark})
+			require.NoError(t, err)
+
+			t.Cleanup(resumed.Close)
+
+			events, err = resumed.Next(t.Context())
+			require.NoError(t, err)
+			assert.Len(t, events, test.publish-1)
+		})
+	}
+}

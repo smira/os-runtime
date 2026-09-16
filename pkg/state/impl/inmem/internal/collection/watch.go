@@ -324,5 +324,10 @@ func filterInPlaceMutating[S ~[]V, V any](slc S, fn func(*V) bool) S {
 		}
 	}
 
+	// the result shares its backing array with the batch it was filtered from, so the rejected
+	// entries past the result are still reachable from it: zero them out, or a consumer holding on
+	// to a small filtered batch would keep the resources of the whole batch alive
+	clear(slc[len(r):])
+
 	return r
 }

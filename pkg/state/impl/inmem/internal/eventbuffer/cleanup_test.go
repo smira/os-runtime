@@ -317,3 +317,48 @@ func TestCleanupBookmarkAtBoundary(t *testing.T) {
 	_, err = f.Subscribe(eventbuffer.SubscribeOptions{Bookmark: firstBookmark})
 	assert.True(t, state.IsInvalidWatchBookmarkError(err), "expected an invalid bookmark error, got %v", err)
 }
+
+// TestCleanupThenExpire verifies that the events released by a sweep are not accounted for a second
+// time once the write position runs over their slots: a quiet feed whose events were dropped should
+// still deliver the events published to it afterwards.
+func TestCleanupThenExpire(t *testing.T) {
+	t.Parallel()
+
+	buf := eventbuffer.New(8, 8, 1)
+
+	quiet := buf.NewFeed("ns", "quiet")
+	busy := buf.NewFeed("ns", "busy")
+
+	// a watcher which never consumes keeps the events of the busy feed retained, so that the sweep
+	// counts below are all about the quiet feed
+	busyWatcher, err := busy.Subscribe(eventbuffer.SubscribeOptions{})
+	require.NoError(t, err)
+
+	t.Cleanup(busyWatcher.Close)
+
+	quiet.Publish(testEvent("old"))
+
+	// the quiet feed has no watchers, so two sweeps release the event published above
+	require.Zero(t, buf.Cleanup())
+	require.Equal(t, 1, buf.Cleanup())
+
+	// rotate the buffer over the released slot with the events of the other feed
+	for i := range 8 {
+		busy.Publish(testEvent(strconv.Itoa(i)))
+	}
+
+	tail, err := quiet.Subscribe(eventbuffer.SubscribeOptions{TailEvents: 1})
+	require.NoError(t, err)
+
+	t.Cleanup(tail.Close)
+
+	quiet.Publish(testEvent("new"))
+
+	events, err := tail.Next(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []resource.ID{"new"}, eventIDs(events))
+
+	// and the sweeps should keep releasing the events of the feed after the buffer wrapped
+	require.Zero(t, buf.Cleanup())
+	assert.Equal(t, 1, buf.Cleanup())
+}

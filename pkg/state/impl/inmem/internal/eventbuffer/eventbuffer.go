@@ -77,10 +77,17 @@ type Feed struct {
 	// A watcher which consumed less than evictedSeq events has missed at least one of them.
 	evictedSeq int64
 
-	// staleSeq is the number of the feed events which are too old for a new watch to start from.
+	// staleSeq is the number of the feed events the write position came within the safety gap of.
 	//
 	// staleSeq is always >= evictedSeq, the difference is the safety gap.
 	staleSeq int64
+
+	// droppedSeq is the number of the feed events released by a cleanup sweep.
+	//
+	// It is tracked apart from staleSeq: a sweep releases the events by an absolute count, while
+	// expireLocked charges them one by one as the write position runs over their slots, so a single
+	// counter would account for the same event twice and drift past publishedSeq.
+	droppedSeq int64
 
 	// sweepSeq is the number of the feed events published as of the previous cleanup sweep.
 	//
@@ -166,6 +173,17 @@ func (buf *Buffer) NewFeed(ns resource.Namespace, typ resource.Type) *Feed {
 	return f
 }
 
+// NumFeeds returns the number of the feeds registered with the buffer.
+//
+// The cleanup walks every feed ever created, so this is the metric which tells whether the feeds
+// are created once per event producer.
+func (buf *Buffer) NumFeeds() int {
+	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	return len(buf.feeds)
+}
+
 // Publish an event to the feed.
 //
 // Publish overwrites the event bookmark, and it wakes up the watchers of this feed only.
@@ -218,6 +236,16 @@ func (buf *Buffer) expireLocked() {
 	// charge the eviction to the wrong feed
 	for ; buf.evictedUpTo <= buf.writePos-capacity; buf.evictedUpTo++ {
 		buf.stream[buf.evictedUpTo%capacity].feed.evictedSeq++
+	}
+
+	// while the buffer is still growing no event can be overwritten: the capacity doubles exactly
+	// when the write position reaches it, before any slot is reused, so the gap protects nothing yet
+	//
+	// the stale boundary is computed against the capacity of the moment and it never rolls back, so
+	// marking the events stale before the buffer reached its max capacity would keep them out of the
+	// reach of the new watches even once the buffer grew big enough to hold them all
+	if buf.capacity < buf.maxCapacity {
+		return
 	}
 
 	// the events within the gap from the write position are about to be overwritten soon,
@@ -274,13 +302,22 @@ func (f *Feed) Subscribe(opts SubscribeOptions) (*Watcher, error) {
 	return w, nil
 }
 
+// staleBoundaryLocked returns the number of the feed events which are too old for a new watch to
+// start from: they were either released by a cleanup sweep, or the write position came within the
+// safety gap of them.
+//
+// The buffer mutex should be held.
+func (f *Feed) staleBoundaryLocked() int64 {
+	return max(f.staleSeq, f.droppedSeq)
+}
+
 // tailLocked returns the number of the feed events to rewind so that the watcher gets up to
 // tailEvents events matching the filter (any event if the filter is nil).
 //
 // The buffer mutex should be held.
 func (f *Feed) tailLocked(tailEvents int, filter func(*state.Event) bool) int64 {
 	// events which are already stale can't be replayed
-	available := f.publishedSeq - f.staleSeq
+	available := f.publishedSeq - f.staleBoundaryLocked()
 
 	if filter == nil {
 		return min(int64(tailEvents), available)
@@ -318,7 +355,7 @@ func (f *Feed) resumeLocked(bookmark state.Bookmark) (int64, error) {
 		return 0, err
 	}
 
-	if seq < f.staleSeq || seq > f.publishedSeq {
+	if seq < f.staleBoundaryLocked() || seq > f.publishedSeq {
 		return 0, errs.ErrInvalidWatchBookmark
 	}
 

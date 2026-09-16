@@ -60,10 +60,12 @@ func (f *Feed) cleanupLocked() int {
 
 	f.sweepSeq = f.publishedSeq
 
-	// the events at or below staleSeq were either dropped by an earlier sweep or pushed out of the
-	// buffer altogether, and the ones below evictedSeq are not even ours to read anymore, which is
-	// covered as staleSeq >= evictedSeq
-	if boundary <= f.staleSeq {
+	// the events at or below the stale boundary were either dropped by an earlier sweep or pushed
+	// out of the buffer altogether, and the ones below evictedSeq are not even ours to read anymore,
+	// which is covered as staleSeq >= evictedSeq
+	staleBoundary := f.staleBoundaryLocked()
+
+	if boundary <= staleBoundary {
 		return 0
 	}
 
@@ -78,7 +80,7 @@ func (f *Feed) cleanupLocked() int {
 		pos = buf.stream[pos%capacity].prevPos
 	}
 
-	dropped := boundary - f.staleSeq
+	dropped := boundary - staleBoundary
 
 	for range dropped {
 		buffered := &buf.stream[pos%capacity]
@@ -90,7 +92,11 @@ func (f *Feed) cleanupLocked() int {
 	}
 
 	// a new watch can no longer start from the dropped events
-	f.staleSeq = boundary
+	//
+	// this is droppedSeq rather than staleSeq: the write position charges the very same events to
+	// staleSeq once it runs over their slots, and accounting for them in both places would push the
+	// stale boundary past publishedSeq
+	f.droppedSeq = boundary
 
 	return int(dropped)
 }

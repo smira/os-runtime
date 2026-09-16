@@ -7,8 +7,10 @@ package inmem
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/siderolabs/gen/concurrent"
 
@@ -39,6 +41,9 @@ type State struct {
 	buffer      *eventbuffer.Buffer
 	store       BackingStore
 
+	// collectionsMu makes the collection creation single-winner, see getCollection.
+	collectionsMu sync.Mutex
+
 	storeMu sync.Mutex
 	loaded  atomic.Bool
 }
@@ -56,17 +61,41 @@ func NewStateWithOptions(opts ...StateOption) *State {
 		opt(&options)
 	}
 
-	st := &State{
+	return &State{
 		collections: concurrent.NewHashTrieMap[collectionKey, *collection.Collection](),
 		buffer:      eventbuffer.New(options.HistoryInitialCapacity, options.HistoryMaxCapacity, options.HistoryGap),
 		store:       options.BackingStore,
 	}
+}
 
-	if options.HistoryCleanupCtx != nil && options.HistoryCleanupInterval > 0 {
-		go st.buffer.RunCleanup(options.HistoryCleanupCtx, options.HistoryCleanupInterval)
+// RunHistoryCleanup sweeps the state event history buffer on every tick of the interval until the
+// context is canceled.
+//
+// The event history buffer grows up to the max capacity as the events are published, and it never
+// shrinks back. An event held by the buffer keeps the resources it references alive, so a state
+// which went through a burst of changes keeps the resources of that burst in memory long after the
+// consumers are done with them.
+//
+// A sweep releases the events which every watcher of their resource type has already consumed and
+// which are older than the interval, so that the resources become garbage. The buffer capacity
+// itself is not affected, only the memory the events reference.
+//
+// The cleanup shortens the effective history: a watch which starts from a bookmark pointing to a
+// released event fails with an error matching state.IsInvalidWatchBookmarkError, and TailEvents
+// returns only the events which are still retained. Callers which resume from bookmarks should
+// already handle that error by restarting the watch from scratch, as the same happens when the
+// events are pushed out of the buffer.
+//
+// RunHistoryCleanup blocks, so that the caller owns the goroutine it runs in. The history is not
+// cleaned up unless it is running.
+func (st *State) RunHistoryCleanup(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("history cleanup interval should be positive, got %s", interval)
 	}
 
-	return st
+	st.buffer.RunCleanup(ctx, interval)
+
+	return nil
 }
 
 func (st *State) getCollection(ns resource.Namespace, typ resource.Type) *collection.Collection {
@@ -76,8 +105,21 @@ func (st *State) getCollection(ns resource.Namespace, typ resource.Type) *collec
 		return r
 	}
 
+	// creating a collection registers a feed in the shared event buffer, and a feed can't be
+	// created speculatively: the candidates which lose the race would stay in the buffer forever,
+	// and every cleanup sweep would walk them
+	st.collectionsMu.Lock()
+	defer st.collectionsMu.Unlock()
+
+	// re-check after lock
+	if r, ok := st.collections.Load(key); ok {
+		return r
+	}
+
 	// a nil BackingStore converts to a nil collection.Store, so the collection stays in-memory only
-	r, _ := st.collections.LoadOrStore(key, collection.New(ns, typ, st.buffer, st.store))
+	r := collection.New(ns, typ, st.buffer, st.store)
+
+	st.collections.Store(key, r)
 
 	return r
 }

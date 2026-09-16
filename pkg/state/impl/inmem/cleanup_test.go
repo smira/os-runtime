@@ -85,11 +85,11 @@ func TestHistoryCleanup(t *testing.T) {
 	}
 }
 
-// TestHistoryCleanupOption verifies the WithHistoryCleanup wiring end to end: the sweeps run on the
-// interval, and the cleanup goroutine is gone once the context is canceled.
+// TestRunHistoryCleanup verifies the RunHistoryCleanup wiring end to end: the sweeps run on the
+// interval, and the cleanup returns once the context is canceled.
 // The test is not parallel on purpose: goleak would otherwise pick up the goroutines of the other
 // tests running alongside it.
-func TestHistoryCleanupOption(t *testing.T) {
+func TestRunHistoryCleanup(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	const namespace = "default"
@@ -97,9 +97,16 @@ func TestHistoryCleanupOption(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	st := state.WrapCore(inmem.NewStateWithOptions(
-		inmem.WithHistoryCleanup(ctx, 10*time.Millisecond),
-	))
+	coreState := inmem.NewState()
+	st := state.WrapCore(coreState)
+
+	cleanupDone := make(chan struct{})
+
+	go func() {
+		defer close(cleanupDone)
+
+		assert.NoError(t, coreState.RunHistoryCleanup(ctx, 10*time.Millisecond))
+	}()
 
 	kind := resource.NewMetadata(namespace, conformance.PathResourceType, "", resource.VersionUndefined)
 
@@ -128,6 +135,21 @@ func TestHistoryCleanupOption(t *testing.T) {
 		)
 	}, 5*time.Second, 10*time.Millisecond, "the cleanup should have dropped the consumed event")
 
-	// the deferred goleak check verifies the cleanup goroutine exits with the context
+	// RunHistoryCleanup should return once the context it was given is canceled
 	cancel()
+
+	select {
+	case <-cleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for the history cleanup to return")
+	}
+}
+
+// TestRunHistoryCleanupRejectsInterval verifies that a non-positive interval is reported instead of
+// being turned into a busy loop.
+func TestRunHistoryCleanupRejectsInterval(t *testing.T) {
+	t.Parallel()
+
+	assert.Error(t, inmem.NewState().RunHistoryCleanup(t.Context(), 0))
+	assert.Error(t, inmem.NewState().RunHistoryCleanup(t.Context(), -time.Second))
 }
